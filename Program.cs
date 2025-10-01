@@ -8,18 +8,15 @@ builder.Services.Configure<ForwardedHeadersOptions>(opts =>
 {
     opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
 
-    // The IP your app sees as RemoteIpAddress (PA untrust public IP)
-    opts.KnownProxies.Add(IPAddress.Parse("52.238.213.102"));
+    // Trust ALL proxies for the lab (so headers aren't dropped)
+    opts.KnownNetworks.Clear();
+    opts.KnownProxies.Clear();
 
-    // If you add an Azure LB VIP (HA), add it here too:
-    // opts.KnownProxies.Add(IPAddress.Parse("<your-lb-public-ip>"));
+    // Accept long chains (AFD → AppGW → NGINX → Palo → App Service)
+    opts.ForwardLimit = null;
 
-    // Accept a reasonable XFF chain depth
-    opts.ForwardLimit = 10;
-
-    // If you ever want to trust all intermediaries for a lab, uncomment the next two (LESS secure):
-    // opts.KnownNetworks.Clear();
-    // opts.KnownProxies.Clear();
+    // This avoids strict symmetry checks that sometimes discard partial chains
+    opts.RequireHeaderSymmetry = false;
 });
 
 builder.Services.AddRazorPages();
