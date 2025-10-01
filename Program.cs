@@ -3,7 +3,7 @@ using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Honor proxy headers and trust ONLY your Palo Alto's public IP
+// Honor proxy headers and trust ONLY your Palo Alto's public IP (immediate peer)
 builder.Services.Configure<ForwardedHeadersOptions>(opts =>
 {
     opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -17,16 +17,16 @@ builder.Services.Configure<ForwardedHeadersOptions>(opts =>
     // Accept a reasonable XFF chain depth
     opts.ForwardLimit = 10;
 
-    // (optional) Some hosting setups add both XFF and X-Forwarded-Proto multiple times
-    // opts.RequireHeaderSymmetry = false;
+    // If you ever want to trust all intermediaries for a lab, uncomment the next two (LESS secure):
+    // opts.KnownNetworks.Clear();
+    // opts.KnownProxies.Clear();
 });
 
-
-// Add services to the container
 builder.Services.AddRazorPages();
 
 var app = builder.Build();
 
+// Apply forwarded headers BEFORE anything that reads scheme/IP
 app.UseForwardedHeaders();
 
 // Helper to pick the best client IP from headers
@@ -39,44 +39,55 @@ static string BestClientIp(HttpContext ctx)
     var firstXff = string.IsNullOrWhiteSpace(xff) ? null
         : xff.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
 
+    // Prefer the left-most XFF (end-user), then AFD's X-Azure-ClientIP, then Cloudflare, then socket IP
     return firstXff ?? xac ?? cfc ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "";
 }
 
-// Simple request logger (or move into your existing logging)
+// Lightweight request logger
 app.Use(async (ctx, next) =>
 {
     var clientIp = BestClientIp(ctx);
     var xff = ctx.Request.Headers["X-Forwarded-For"].ToString();
     var xac = ctx.Request.Headers["X-Azure-ClientIP"].ToString();
+    var xorig = ctx.Request.Headers["X-Original-ClientIP"].ToString();
 
-    app.Logger.LogInformation("clientIp={clientIp} xff={xff} xAzureClientIp={xac} path={path}",
-        clientIp, xff, xac, ctx.Request.Path);
+    app.Logger.LogInformation(
+        "clientIp={clientIp} xff={xff} xAzureClientIp={xac} xOriginalClientIp={xorig} path={path}",
+        clientIp, xff, xac, xorig, ctx.Request.Path);
 
     await next();
 });
 
-// Quick sanity endpoint
+// Quick sanity endpoint you already had
 app.MapGet("/whoami", (HttpContext ctx) => Results.Json(new {
     bestClientIp = BestClientIp(ctx),
     xForwardedFor = ctx.Request.Headers["X-Forwarded-For"].ToString(),
     xAzureClientIp = ctx.Request.Headers["X-Azure-ClientIP"].ToString(),
+    xOriginalClientIp = ctx.Request.Headers["X-Original-ClientIP"].ToString(),
     remoteIp = ctx.Connection.RemoteIpAddress?.ToString()
 }));
 
+// NEW: Full header dump to prove what AppGW/Palo deliver
+app.MapGet("/debug/headers", (HttpContext ctx) =>
+{
+    var dict = ctx.Request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value));
+    return Results.Json(new {
+        bestClientIp = BestClientIp(ctx),
+        remoteIp = ctx.Connection.RemoteIpAddress?.ToString(),
+        headers = dict
+    });
+});
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
-    // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
-
 app.UseRouting();
-
 app.UseAuthorization();
 
 app.MapRazorPages();
